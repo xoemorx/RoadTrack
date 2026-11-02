@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>RoadSense – Live Road Conditions</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --good: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --wet: #3b82f6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+    #app { display: flex; flex-direction: column; height: 100%; }
+    #map { flex: 1; min-height: 0; background: #1e293b; }
+    #panel {
+      background: var(--card);
+      border-top: 1px solid #334155;
+      padding: 12px 16px 16px;
+      max-height: 42vh;
+      overflow-y: auto;
+      box-shadow: 0 -4px 20px rgba(0,0,0,0.4);
+    }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .header h1 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; }
+    .badge {
+      font-size: 0.7rem; font-weight: 600; padding: 3px 8px; border-radius: 999px;
+      background: #334155; color: var(--muted);
+    }
+    .badge.live { background: #14532d; color: #86efac; }
+    .badge.off { background: #7f1d1d; color: #fca5a5; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .stat {
+      background: #0f172a; border-radius: 10px; padding: 10px 12px;
+      border: 1px solid #334155;
+    }
+    .stat .label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat .value { font-size: 1.25rem; font-weight: 700; margin-top: 2px; }
+    .stat .unit { font-size: 0.8rem; font-weight: 500; color: var(--muted); }
+    .condition {
+      display: flex; align-items: center; gap: 10px;
+      background: #0f172a; border-radius: 10px; padding: 12px;
+      border: 1px solid #334155; margin-bottom: 10px;
+    }
+    .condition .icon { font-size: 1.8rem; line-height: 1; }
+    .condition .info { flex: 1; }
+    .condition .title { font-weight: 700; font-size: 1rem; }
+    .condition .detail { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      flex: 1; min-width: 100px;
+      background: #334155; color: var(--text); border: none;
+      padding: 11px 14px; border-radius: 10px; font-weight: 600;
+      font-size: 0.9rem; cursor: pointer; transition: background 0.15s;
+    }
+    button:active { transform: scale(0.98); }
+    button.primary { background: var(--accent); color: #0f172a; }
+    button.danger { background: var(--danger); color: white; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    #alerts {
+      margin-top: 10px; font-size: 0.8rem; color: var(--muted);
+      max-height: 70px; overflow-y: auto;
+    }
+    #alerts div { padding: 4px 0; border-bottom: 1px solid #1e293b; }
+    .status-line { font-size: 0.75rem; color: var(--muted); margin-top: 6px; }
+    .good { color: var(--good); }
+    .warn { color: var(--warn); }
+    .danger { color: var(--danger); }
+    .wet { color: var(--wet); }
+    @media (min-width: 640px) {
+      #panel { max-height: 320px; }
+      .grid { grid-template-columns: repeat(4, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="map"></div>
+    <div id="panel">
+      <div class="header">
+        <h1>RoadSense</h1>
+        <span id="statusBadge" class="badge off">OFF</span>
+      </div>
+
+      <div class="grid">
+        <div class="stat">
+          <div class="label">Speed</div>
+          <div class="value"><span id="speedVal">–</span> <span class="unit">km/h</span></div>
+        </div>
+        <div class="stat">
+          <div class="label">Heading</div>
+          <div class="value"><span id="headingVal">–</span> <span class="unit">°</span></div>
+        </div>
+        <div class="stat">
+          <div class="label">Accuracy</div>
+          <div class="value"><span id="accVal">–</span> <span class="unit">m</span></div>
+        </div>
+        <div class="stat">
+          <div class="label">Curve Radius</div>
+          <div class="value"><span id="radiusVal">–</span> <span class="unit">m</span></div>
+        </div>
+      </div>
+
+      <div class="condition" id="roadCondition">
+        <div class="icon">🛣️</div>
+        <div class="info">
+          <div class="title" id="condTitle">Waiting for GPS…</div>
+          <div class="detail" id="condDetail">Start tracking to analyse road conditions</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="btnStart" class="primary">Start Tracking</button>
+        <button id="btnStop" disabled>Stop</button>
+        <button id="btnMute">Mute Voice</button>
+        <button id="btnSpeak">Test Voice</button>
+      </div>
+
+      <div class="status-line" id="weatherLine">Weather: –</div>
+      <div id="alerts"></div>
+    </div>
+  </div>
+
+  <script>
+    // ========== CONFIG ==========
+    const MAX_POINTS = 40;           // GPS history buffer
+    const CURVE_MIN_POINTS = 6;
+    const ALERT_COOLDOWN_MS = 12000; // don't spam same alert
+    const WEATHER_INTERVAL_MS = 90 * 1000;
+    const SPEAK_MIN_INTERVAL = 8000;
+
+    // Friction coefficients (approximate)
+    const MU = { dry: 0.72, wet: 0.42, slippery: 0.22 };
+
+    // ========== STATE ==========
+    let map, marker, trailLine, accuracyCircle;
+    let watchId = null;
+    let points = [];                 // {lat, lon, t, speed, heading}
+    let muted = false;
+    let lastSpoken = {};
+    let lastSpeakTime = 0;
+    let weather = null;
+    let weatherTimer = null;
+    let lastWeatherFetch = 0;
+    let currentCondition = "unknown";
+
+    // ========== DOM ==========
+    const $ = id => document.getElementById(id);
+    const els = {
+      badge: $("statusBadge"),
+      speed: $("speedVal"),
+      heading: $("headingVal"),
+      acc: $("accVal"),
+      radius: $("radiusVal"),
+      condTitle: $("condTitle"),
+      condDetail: $("condDetail"),
+      weatherLine: $("weatherLine"),
+      alerts: $("alerts"),
+      btnStart: $("btnStart"),
+      btnStop: $("btnStop"),
+      btnMute: $("btnMute"),
+      btnSpeak: $("btnSpeak")
+    };
+
+    // ========== MAP ==========
+    function initMap() {
+      map = L.map("map", { zoomControl: false, attributionControl: true }).setView([40.7, -74.0], 15);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+      }).addTo(map);
+      L.control.zoom({ position: "topright" }).addTo(map);
+
+      marker = L.circleMarker([0, 0], {
+        radius: 9, color: "#0ea5e9", fillColor: "#38bdf8", fillOpacity: 0.9, weight: 3
+      }).addTo(map);
+
+      trailLine = L.polyline([], { color: "#38bdf8", weight: 4, opacity: 0.7 }).addTo(map);
+      accuracyCircle = L.circle([0, 0], { radius: 20, color: "#38bdf8", fillOpacity: 0.08, weight: 1 }).addTo(map);
+    }
+
+    // ========== GEOLOCATION ==========
+    function startTracking() {
+      if (!navigator.geolocation) {
+        alert("Geolocation is not supported by this browser.");
+        return;
+      }
+      els.btnStart.disabled = true;
+      els.btnStop.disabled = false;
+      els.badge.textContent = "LOCATING…";
+      els.badge.className = "badge";
+
+      const opts = { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 };
+      watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, opts);
+      speak("RoadSense started. Tracking your position.");
+    }
+
+    function stopTracking() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (weatherTimer) { clearInterval(weatherTimer); weatherTimer = null; }
+      els.btnStart.disabled = false;
+      els.btnStop.disabled = true;
+      els.badge.textContent = "OFF";
+      els.badge.className = "badge off";
+      speak("Tracking stopped.");
+    }
+
+    function onGeoError(err) {
+      console.warn(err);
+      addAlert("GPS error: " + err.message);
+      els.badge.textContent = "GPS ERROR";
+      els.badge.className = "badge off";
+    }
+
+    function onPosition(pos) {
+      const { latitude: lat, longitude: lon, accuracy, speed, heading } = pos.coords;
+      const t = pos.timestamp || Date.now();
+      // speed is m/s (can be null)
+      const speedKmh = (speed != null && speed >= 0) ? speed * 3.6 : estimateSpeed(lat, lon, t);
+
+      const pt = { lat, lon, t, speed: speedKmh, heading: heading != null ? heading : null, accuracy };
+      points.push(pt);
+      if (points.length > MAX_POINTS) points.shift();
+
+      // Update map
+      marker.setLatLng([lat, lon]);
+      accuracyCircle.setLatLng([lat, lon]).setRadius(Math.max(accuracy || 20, 8));
+      const latlngs = points.map(p => [p.lat, p.lon]);
+      trailLine.setLatLngs(latlngs);
+      map.setView([lat, lon], Math.max(map.getZoom(), 16), { animate: true });
+
+      // UI numbers
+      els.speed.textContent = speedKmh != null ? speedKmh.toFixed(0) : "–";
+      els.heading.textContent = (heading != null && !isNaN(heading)) ? Math.round(heading) : "–";
+      els.acc.textContent = accuracy != null ? Math.round(accuracy) : "–";
+      els.badge.textContent = "LIVE";
+      els.badge.className = "badge live";
+
+      // Analysis
+      analyseRoad(pt);
+      maybeFetchWeather(lat, lon);
+    }
+
+    function estimateSpeed(lat, lon, t) {
+      if (points.length < 2) return null;
+      const prev = points[points.length - 1];
+      const dt = (t - prev.t) / 1000; // s
+      if (dt <= 0.3 || dt > 10) return null;
+      const dist = haversine(prev.lat, prev.lon, lat, lon); // metres
+      return (dist / dt) * 3.6;
+    }
+
+    // ========== CURVATURE ==========
+    function haversine(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const toRad = d => d * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+      return 2 * R * Math.asin(Math.sqrt(a));
+    }
+
+    // Circumradius of triangle formed by 3 points (metres). Returns Infinity if collinear.
+    function circumradius(p1, p2, p3) {
+      const a = haversine(p2.lat, p2.lon, p3.lat, p3.lon);
+      const b = haversine(p1.lat, p1.lon, p3.lat, p3.lon);
+      const c = haversine(p1.lat, p1.lon, p2.lat, p2.lon);
+      if (a < 1 || b < 1 || c < 1) return Infinity;
+      // Heron's formula for area
+      const s = (a + b + c) / 2;
+      const areaSq = s * (s - a) * (s - b) * (s - c);
+      if (areaSq <= 0) return Infinity;
+      const area = Math.sqrt(areaSq);
+      const R = (a * b * c) / (4 * area);
+      return R;
+    }
+
+    function analyseLocalCurve() {
+      if (points.length < CURVE_MIN_POINTS) return { radius: null, difficulty: "unknown" };
+      // Use last several points, sample triples
+      const recent = points.slice(-12);
+      let radii = [];
+      for (let i = 0; i < recent.length - 2; i++) {
+        const R = circumradius(recent[i], recent[i+1], recent[i+2]);
+        if (R < 5000 && R > 5) radii.push(R); // ignore near-straight and tiny noise
+      }
+      if (radii.length === 0) return { radius: null, difficulty: "straight" };
+      // Use the tightest (smallest) meaningful radius in the window
+      radii.sort((a,b) => a - b);
+      const R = radii[Math.floor(radii.length * 0.25)]; // 25th percentile (tighter side)
+      let difficulty = "straight";
+      if (R < 35) difficulty = "hairpin";
+      else if (R < 80) difficulty = "tight";
+      else if (R < 180) difficulty = "moderate";
+      else if (R < 400) difficulty = "sweeping";
+      return { radius: R, difficulty };
+    }
+
+    function safeSpeedKmh(radiusM, mu) {
+      if (!radiusM || radiusM > 2000) return null;
+      const g = 9.81;
+      const v = Math.sqrt(mu * g * radiusM); // m/s
+      return v * 3.6;
+    }
+
+    // ========== WEATHER ==========
+    async function fetchWeather(lat, lon) {
+      try {
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&hourly=precipitation&forecast_days=1&timezone=auto`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Weather HTTP " + res.status);
+        const data = await res.json();
+        weather = {
+          temp: data.current.temperature_2m,
+          precip: data.current.precipitation || 0,
+          humidity: data.current.relative_humidity_2m,
+          wind: data.current.wind_speed_10m,
+          code: data.current.weather_code,
+          time: Date.now()
+        };
+        // recent hourly precip sum (last 2-3 hours if available)
+        if (data.hourly && data.hourly.precipitation) {
+          const now = new Date();
+          let recent = 0;
+          // simple: last 3 values roughly
+          const arr = data.hourly.precipitation.slice(-6);
+          recent = arr.reduce((s, v) => s + (v || 0), 0);
+          weather.recentPrecip = recent;
+        } else {
+          weather.recentPrecip = weather.precip;
+        }
+        lastWeatherFetch = Date.now();
+        updateWeatherUI();
+      } catch (e) {
+        console.warn("Weather fetch failed", e);
+        addAlert("Weather update failed");
+      }
+    }
+
+    function maybeFetchWeather(lat, lon) {
+      if (Date.now() - lastWeatherFetch > WEATHER_INTERVAL_MS || !weather) {
+        fetchWeather(lat, lon);
+      }
+    }
+
+    function classifyRoadSurface() {
+      if (!weather) return { state: "unknown", mu: MU.dry, label: "Unknown", emoji: "❓" };
+      const temp = weather.temp;
+      const precip = weather.precip || 0;
+      const recent = weather.recentPrecip || 0;
+
+      // Simple but useful heuristics
+      if ((precip > 0.1 || recent > 0.5) && temp <= 1.5) {
+        return { state: "slippery", mu: MU.slippery, label: "Slippery / possible ice", emoji: "🧊" };
+      }
+      if (precip > 0.2 || recent > 1.5) {
+        return { state: "wet", mu: MU.wet, label: "Wet road", emoji: "🌧️" };
+      }
+      if (temp <= 0 && recent > 0.1) {
+        return { state: "slippery", mu: MU.slippery, label: "Cold + residual moisture – caution", emoji: "❄️" };
+      }
+      return { state: "dry", mu: MU.dry, label: "Dry road", emoji: "☀️" };
+    }
+
+    function updateWeatherUI() {
+      if (!weather) return;
+      const surf = classifyRoadSurface();
+      els.weatherLine.innerHTML = `Weather: ${weather.temp.toFixed(1)}°C · precip ${weather.precip.toFixed(1)} mm · wind ${weather.wind.toFixed(0)} km/h · <span class="${surf.state === 'dry' ? 'good' : surf.state === 'wet' ? 'wet' : 'danger'}">${surf.label}</span>`;
+    }
+
+    // ========== ANALYSIS + ALERTS ==========
+    function analyseRoad(pt) {
+      const curve = analyseLocalCurve();
+      const surf = classifyRoadSurface();
+      currentCondition = surf.state;
+
+      if (curve.radius) {
+        els.radius.textContent = Math.round(curve.radius);
+      } else {
+        els.radius.textContent = "–";
+      }
+
+      // Safe speed for current local geometry
+      const vSafe = safeSpeedKmh(curve.radius, surf.mu);
+      const speed = pt.speed;
+
+      // Build status text
+      let title = surf.emoji + " " + surf.label;
+      let detail = "";
+      if (curve.difficulty === "hairpin" || curve.difficulty === "tight") {
+        detail = `Tight curve (R≈${Math.round(curve.radius)} m)`;
+        if (vSafe) detail += ` · advised ≤ ${Math.round(vSafe)} km/h`;
+      } else if (curve.difficulty === "moderate") {
+        detail = `Moderate curve (R≈${Math.round(curve.radius)} m)`;
+        if (vSafe) detail += ` · advised ≤ ${Math.round(vSafe)} km/h`;
+      } else if (curve.difficulty === "sweeping") {
+        detail = `Sweeping bend`;
+      } else {
+        detail = "Road appears relatively straight";
+      }
+      if (speed != null && vSafe && speed > vSafe * 1.05) {
+        detail += " · YOU ARE ABOVE ADVISED SPEED";
+      }
+
+      els.condTitle.textContent = title;
+      els.condDetail.textContent = detail;
+
+      // Colour the condition card
+      const card = $("roadCondition");
+      card.style.borderColor = surf.state === "dry" ? "#166534" : surf.state === "wet" ? "#1d4ed8" : "#991b1b";
+
+      // Voice alerts (throttled)
+      maybeSpeakAlerts(curve, surf, speed, vSafe);
+    }
+
+    function maybeSpeakAlerts(curve, surf, speed, vSafe) {
+      if (muted) return;
+      const now = Date.now();
+      if (now - lastSpeakTime < SPEAK_MIN_INTERVAL) return;
+
+      // Priority 1: slippery
+      if (surf.state === "slippery" && shouldSpeak("slippery")) {
+        speak("Caution. Road may be slippery or icy. Reduce speed.");
+        return;
+      }
+      // Priority 2: wet + higher speed
+      if (surf.state === "wet" && speed != null && speed > 55 && shouldSpeak("wet")) {
+        speak("Road is wet. Drive carefully.");
+        return;
+      }
+      // Priority 3: tight curve + too fast
+      if ((curve.difficulty === "hairpin" || curve.difficulty === "tight") && vSafe && speed != null && speed > vSafe * 0.95) {
+        if (shouldSpeak("tightcurve")) {
+          const msg = curve.difficulty === "hairpin"
+            ? `Sharp hairpin. Advised speed ${Math.round(vSafe)} kilometres per hour.`
+            : `Tight curve ahead. Advised maximum ${Math.round(vSafe)} kilometres per hour.`;
+          speak(msg);
+          return;
+        }
+      }
+      // Priority 4: moderate curve + significantly over
+      if (curve.difficulty === "moderate" && vSafe && speed != null && speed > vSafe * 1.15) {
+        if (shouldSpeak("modcurve")) {
+          speak(`Moderate curve. Consider slowing to around ${Math.round(vSafe)} kilometres per hour.`);
+        }
+      }
+    }
+
+    function shouldSpeak(key) {
+      const now = Date.now();
+      if (lastSpoken[key] && now - lastSpoken[key] < ALERT_COOLDOWN_MS) return false;
+      lastSpoken[key] = now;
+      lastSpeakTime = now;
+      return true;
+    }
+
+    // ========== TTS ==========
+    function speak(text) {
+      if (muted || !window.speechSynthesis) return;
+      // Cancel any ongoing to keep alerts timely
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.05;
+      u.pitch = 1.0;
+      u.volume = 1.0;
+      // Prefer a clear English voice if available
+      const voices = speechSynthesis.getVoices();
+      const preferred = voices.find(v => /en(-|_)?(US|GB|AU)?/i.test(v.lang) && /Google|Samantha|Daniel|Natural/i.test(v.name))
+                    || voices.find(v => /^en/i.test(v.lang));
+      if (preferred) u.voice = preferred;
+      speechSynthesis.speak(u);
+      addAlert("🔊 " + text);
+    }
+
+    // Load voices (Chrome needs this)
+    if (window.speechSynthesis) {
+      speechSynthesis.getVoices();
+      speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+    }
+
+    // ========== UI HELPERS ==========
+    function addAlert(msg) {
+      const div = document.createElement("div");
+      const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      div.textContent = `[${time}] ${msg}`;
+      els.alerts.prepend(div);
+      // keep last ~8
+      while (els.alerts.children.length > 8) els.alerts.removeChild(els.alerts.lastChild);
+    }
+
+    // ========== EVENT LISTENERS ==========
+    els.btnStart.addEventListener("click", startTracking);
+    els.btnStop.addEventListener("click", stopTracking);
+    els.btnMute.addEventListener("click", () => {
+      muted = !muted;
+      els.btnMute.textContent = muted ? "Unmute Voice" : "Mute Voice";
+      if (muted) speechSynthesis.cancel();
+      addAlert(muted ? "Voice muted" : "Voice unmuted");
+    });
+    els.btnSpeak.addEventListener("click", () => {
+      speak("RoadSense voice test. Current road condition: " + (currentCondition || "unknown") + ".");
+    });
+
+    // ========== BOOT ==========
+    initMap();
+    addAlert("Ready. Press Start Tracking and allow location access.");
+    // Try to centre on a reasonable default; will jump on first fix
+  </script>
+</body>
+</html>
